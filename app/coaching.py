@@ -74,32 +74,55 @@ def compare_metrics(user: dict, target: dict) -> list[dict]:
     return findings
 
 
+# ラウンド簡易評価の記号と意味
+RATING_LABELS = {
+    "◎": "とても良い",
+    "○": "良い",
+    "△": "微妙",
+    "✖": "要改善",
+}
+
+
+def _rate_round(issue_count: int, first_engagement_sec: float | None,
+                target_first: float) -> str:
+    """検出された問題数と初動タイミングからラウンドを◎○△✖で簡易評価する。"""
+    if issue_count >= 2:
+        return "✖"
+    if issue_count == 1:
+        return "△"
+    # 問題なし: 初動が上位帯の水準以上に規律的なら◎、それ以外は○
+    if first_engagement_sec is not None and first_engagement_sec >= target_first * 0.8:
+        return "◎"
+    return "○"
+
+
 def analyze_rounds(metrics: MatchMetrics, target: dict) -> list[dict]:
-    """ラウンドごとの所見を生成する。"""
+    """ラウンドごとの所見と簡易評価（◎○△✖）を生成する。"""
     results = []
     target_first = target.get("avg_first_engagement_sec", 30.0)
     for r in metrics.rounds:
-        notes: list[str] = []
+        issues: list[str] = []
         if r.first_engagement_sec is not None and r.first_engagement_sec < target_first * 0.5:
-            notes.append(
+            issues.append(
                 f"開始{r.first_engagement_sec:.0f}秒で交戦が発生しています。"
                 "初動が早すぎる可能性があります（上位帯の平均は"
                 f"{target_first:.0f}秒前後）。"
             )
         if r.engagement_count == 0:
-            notes.append(
+            issues.append(
                 "交戦が検出されませんでした。ラウンドへの関与が薄い（寄り遅れ・芋り）か、"
                 "早期に終了したラウンドの可能性があります。"
             )
         if r.engagement_count >= 8:
-            notes.append(
+            issues.append(
                 "交戦回数が非常に多いラウンドです。撃ち合いの選択（有利ポジション以外では"
                 "引く判断）を見直す余地があります。"
             )
         if r.duration_sec < 50:
-            notes.append("非常に短いラウンドです。ラッシュまたは早期崩壊の可能性があります。")
-        if not notes:
-            notes.append("特筆すべき問題は検出されませんでした。")
+            issues.append("非常に短いラウンドです。ラッシュまたは早期崩壊の可能性があります。")
+
+        rating = _rate_round(len(issues), r.first_engagement_sec, target_first)
+        notes = issues if issues else ["特筆すべき問題は検出されませんでした。"]
         results.append({
             "round": r.index,
             "start_sec": r.start_sec,
@@ -107,6 +130,8 @@ def analyze_rounds(metrics: MatchMetrics, target: dict) -> list[dict]:
             "duration_sec": r.duration_sec,
             "engagement_count": r.engagement_count,
             "first_engagement_sec": r.first_engagement_sec,
+            "rating": rating,
+            "rating_label": RATING_LABELS[rating],
             "notes": notes,
         })
     return results
@@ -205,6 +230,10 @@ AI_SYSTEM_PROMPT = """\
 ## 良かった点
 ## 改善点（優先度順）
 ## ラウンド別コーチング
+（各ラウンドの指標には自動解析による簡易評価 rating（◎○△✖）が付いている。
+  評価の低いラウンド（△・✖）を優先して詳しく分析し、見出しに評価記号を付ける。
+  例: 「第3ラウンド ✖ (3:20〜)」。自動評価が実際のプレー内容と食い違うと
+  判断した場合は、根拠を添えて自分の評価に修正してよい）
 ## 次のランク帯に上がるための練習メニュー
 （改善点に対応させ、デスマッチ・射撃場・カスタムなど具体的な練習方法で）
 """

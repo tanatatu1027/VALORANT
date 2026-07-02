@@ -99,6 +99,14 @@
     background: rgba(255,70,85,.12); color: var(--accent); border: 1px solid var(--accent);
   }
   .axis-desc { display: block; font-size: 12px; color: var(--muted); margin: 4px 0 0 2px; }
+  .rate { font-weight: bold; font-size: 15px; }
+  .rate-best { color: var(--good); }
+  .rate-good { color: #6ec6ff; }
+  .rate-soso { color: var(--warn); }
+  .rate-bad { color: var(--accent); }
+  #round-summary-table tbody tr { cursor: pointer; }
+  #round-summary-table tbody tr:hover { background: #2b3a49; }
+  .round-card.highlight { outline: 2px solid var(--accent); }
 </style>
 </head>
 <body>
@@ -164,6 +172,20 @@
           AI詳細レポートもこの観点で評価します。
         </p>
         <div id="res-axes"></div>
+      </div>
+      <div class="card">
+        <h3>ラウンド一覧（簡易評価）</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          <span class="rate rate-best">◎</span> とても良い ／
+          <span class="rate rate-good">○</span> 良い ／
+          <span class="rate rate-soso">△</span> 微妙 ／
+          <span class="rate rate-bad">✖</span> 要改善
+          — 行をクリックすると動画がそのラウンドにジャンプし、下の詳細分析へ移動します。
+        </p>
+        <table id="round-summary-table">
+          <thead><tr><th>ラウンド</th><th>評価</th><th>時間帯</th><th>交戦</th><th>初動</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
       <div class="card">
         <h3>ラウンド別分析</h3>
@@ -442,6 +464,23 @@ function seekVideo(sec) {
   document.getElementById("video-wrap").scrollIntoView({ behavior: "smooth" });
 }
 
+// 評価表からラウンドを選択: 動画をジャンプさせ、該当の詳細分析をハイライトする
+function focusRound(roundIndex, startSec, hasVideo) {
+  if (hasVideo) {
+    const video = document.getElementById("match-video");
+    video.currentTime = Math.max(0, startSec);
+    video.play();
+  }
+  const card = document.getElementById(`round-card-${roundIndex}`);
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.querySelectorAll(".round-card.highlight")
+      .forEach(el => el.classList.remove("highlight"));
+    card.classList.add("highlight");
+    setTimeout(() => card.classList.remove("highlight"), 3000);
+  }
+}
+
 function renderReport(rep) {
   document.getElementById("coach-result").style.display = "block";
 
@@ -486,14 +525,36 @@ function renderReport(rep) {
     axesDiv.appendChild(det);
   }
 
+  // 評価記号 → CSSクラス
+  const RATE_CLASS = { "◎": "rate-best", "○": "rate-good", "△": "rate-soso", "✖": "rate-bad" };
+
+  // ラウンド一覧（簡易評価表）
+  const sumBody = document.querySelector("#round-summary-table tbody");
+  sumBody.innerHTML = "";
+  for (const r of rep.rounds) {
+    const tr = document.createElement("tr");
+    tr.dataset.round = r.round;
+    tr.dataset.seek = r.start_sec;
+    tr.innerHTML =
+      `<td>第${r.round}ラウンド</td>` +
+      `<td><span class="rate ${RATE_CLASS[r.rating] || ""}">${r.rating || "-"}</span></td>` +
+      `<td>${fmtTime(r.start_sec)} 〜 ${fmtTime(r.end_sec)}</td>` +
+      `<td>${r.engagement_count}回</td>` +
+      `<td>${r.first_engagement_sec != null ? Math.round(r.first_engagement_sec) + "秒" : "-"}</td>`;
+    tr.onclick = () => focusRound(r.round, r.start_sec, !!rep.video_url);
+    sumBody.appendChild(tr);
+  }
+
   const roundsDiv = document.getElementById("res-rounds");
   roundsDiv.innerHTML = "";
   for (const r of rep.rounds) {
     const flagged = r.notes.some(n => !n.startsWith("特筆"));
     const div = document.createElement("div");
     div.className = "round-card" + (flagged ? " flagged" : "");
+    div.id = `round-card-${r.round}`;
     div.innerHTML =
       `<div class="round-head"><b>第${r.round}ラウンド</b>` +
+      `<span class="rate ${RATE_CLASS[r.rating] || ""}">${r.rating || ""}</span>` +
       `<span>${fmtTime(r.start_sec)} 〜 ${fmtTime(r.end_sec)}</span>` +
       `<span>交戦 ${r.engagement_count}回</span>` +
       (r.first_engagement_sec != null ? `<span>初動 ${Math.round(r.first_engagement_sec)}秒</span>` : "") +

@@ -91,6 +91,37 @@ def test_report_includes_evaluation_axes():
         assert a["check_items"]
 
 
+def test_round_rating_symbols():
+    """簡易評価: 問題なし+規律的な初動=◎、問題なし=○、問題1件=△、2件以上=✖。"""
+    from app.video_analysis import RoundMetrics
+
+    def one_round(first, engagements, duration):
+        m = MatchMetrics(duration_sec=duration, round_count=1, rounds=[
+            RoundMetrics(index=1, start_sec=0.0, end_sec=duration,
+                         duration_sec=duration, engagement_count=engagements,
+                         first_engagement_sec=first, activity_ratio=0.1),
+        ])
+        return analyze_rounds(m, TARGET)[0]
+
+    # 初動30秒(基準通り)・交戦4回・通常の長さ → ◎
+    assert one_round(30.0, 4, 100.0)["rating"] == "◎"
+    # 初動20秒(基準30秒の0.8倍未満だが早すぎ判定の0.5倍以上) → 問題0件で○
+    assert one_round(20.0, 4, 100.0)["rating"] == "○"
+    # 初動10秒(早すぎ=問題1件) → △
+    assert one_round(10.0, 4, 100.0)["rating"] == "△"
+    # 初動10秒 + 交戦8回(問題2件) → ✖
+    assert one_round(10.0, 8, 100.0)["rating"] == "✖"
+
+
+def test_round_rating_included_in_report():
+    report = build_rule_based_report("ゴールド", _metrics(), TARGET | {
+        "rank": "プラチナ", "source": "default", "sample_count": 0,
+    })
+    for r in report["rounds"]:
+        assert r["rating"] in ("◎", "○", "△", "✖")
+        assert r["rating_label"]
+
+
 def test_ai_prompt_covers_requested_axes():
     """AIコーチのプロンプトが指定された評価観点を網羅していること。"""
     from app.coaching import AI_SYSTEM_PROMPT
