@@ -65,6 +65,20 @@ class BenchmarkStore:
                 )
                 """
             )
+            # プレイヤーがコーチング依頼時にアップロードした動画の解析結果。
+            # 管理者が承認すると reference_videos にコピーされ学習に使われる。
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS contributions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rank TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    video_name TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at REAL NOT NULL
+                )
+                """
+            )
 
     def add_reference(self, rank: str, metrics: MatchMetrics, label: str = "") -> int:
         """学習動画の解析結果を保存する。"""
@@ -113,3 +127,75 @@ class BenchmarkStore:
     def get_target_benchmark(self, user_rank: str) -> dict:
         """利用者のランクに対する比較対象（次のランク帯）のベンチマーク。"""
         return self.get_benchmark(next_rank(user_rank))
+
+    # ---- プレイヤー提供動画（学習候補）の管理 ----------------------------
+
+    def add_contribution(
+        self, rank: str, metrics: MatchMetrics, video_name: str | None = None
+    ) -> int:
+        """プレイヤーの解析結果を学習候補として保存する（status=pending）。"""
+        r = normalize_rank(rank)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO contributions (rank, metrics_json, video_name,"
+                " status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+                (r, json.dumps(metrics.to_dict()), video_name, time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def list_contributions(self, status: str = "pending") -> list[dict]:
+        """指定ステータスの学習候補を新しい順に返す。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, rank, video_name, status, created_at, metrics_json"
+                " FROM contributions WHERE status = ? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            metrics = json.loads(row["metrics_json"])
+            result.append({
+                "id": row["id"],
+                "rank": row["rank"],
+                "video_name": row["video_name"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "round_count": metrics.get("round_count"),
+                "avg_first_engagement_sec": metrics.get("avg_first_engagement_sec"),
+                "avg_engagements_per_round": metrics.get("avg_engagements_per_round"),
+            })
+        return result
+
+    def approve_contribution(self, contribution_id: int) -> dict:
+        """学習候補を承認し、学習データ（reference_videos）に反映する。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT rank, metrics_json, status FROM contributions WHERE id = ?",
+                (contribution_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"学習候補が見つかりません: {contribution_id}")
+            if row["status"] != "pending":
+                raise ValueError(f"この候補は処理済みです（status={row['status']}）")
+            conn.execute(
+                "INSERT INTO reference_videos (rank, label, metrics_json, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (row["rank"], "プレイヤー提供", row["metrics_json"], time.time()),
+            )
+            conn.execute(
+                "UPDATE contributions SET status = 'approved' WHERE id = ?",
+                (contribution_id,),
+            )
+        return {"id": contribution_id, "status": "approved", "rank": row["rank"]}
+
+    def reject_contribution(self, contribution_id: int) -> dict:
+        """学習候補を却下する。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE contributions SET status = 'rejected'"
+                " WHERE id = ? AND status = 'pending'",
+                (contribution_id,),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"未処理の学習候補が見つかりません: {contribution_id}")
+        return {"id": contribution_id, "status": "rejected"}

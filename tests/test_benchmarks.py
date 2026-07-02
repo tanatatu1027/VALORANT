@@ -65,6 +65,45 @@ def test_target_benchmark_uses_next_rank(tmp_path):
     assert b["source"] == "learned"
 
 
+def test_contribution_flow(tmp_path):
+    store = BenchmarkStore(tmp_path / "test.db")
+    cid = store.add_contribution("ゴールド", _metrics(first=20.0), "abc.mp4")
+
+    pending = store.list_contributions("pending")
+    assert len(pending) == 1
+    assert pending[0]["id"] == cid
+    assert pending[0]["rank"] == "ゴールド"
+    assert pending[0]["video_name"] == "abc.mp4"
+
+    # 承認すると学習データに反映される
+    result = store.approve_contribution(cid)
+    assert result["status"] == "approved"
+    assert store.reference_counts() == {"ゴールド": 1}
+    assert store.get_benchmark("ゴールド")["source"] == "learned"
+    assert store.list_contributions("pending") == []
+
+    # 二重承認はエラー
+    with pytest.raises(ValueError):
+        store.approve_contribution(cid)
+
+
+def test_contribution_reject(tmp_path):
+    store = BenchmarkStore(tmp_path / "test.db")
+    cid = store.add_contribution("シルバー", _metrics(), None)
+    result = store.reject_contribution(cid)
+    assert result["status"] == "rejected"
+    # 却下されたものは学習に反映されない
+    assert store.reference_counts() == {}
+    with pytest.raises(KeyError):
+        store.reject_contribution(cid)
+
+
+def test_contribution_not_found(tmp_path):
+    store = BenchmarkStore(tmp_path / "test.db")
+    with pytest.raises(KeyError):
+        store.approve_contribution(999)
+
+
 def test_reference_counts(tmp_path):
     store = BenchmarkStore(tmp_path / "test.db")
     store.add_reference("ダイヤモンド", _metrics())

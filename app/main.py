@@ -3,22 +3,34 @@
 起動方法:
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 
+管理者機能（学習動画の登録・プレイヤー提供動画の承認）は
+環境変数 VALO_COACH_ADMIN_TOKEN のトークンで保護される。
+未設定の場合は起動時に自動生成してコンソールに表示する。
+
 エンドポイント:
-- POST /api/analyze            自分の動画をアップロードしてコーチングを依頼
-- GET  /api/jobs/{job_id}      解析ジョブの進捗・結果を取得
-- POST /api/reference/upload   学習用（プロ・上位ランク）動画を登録
-- GET  /api/benchmarks         現在のベンチマークと学習本数を確認
-- GET  /                       Web UI
+- POST /api/analyze                       自分の動画をアップロードしてコーチングを依頼
+- GET  /api/jobs/{job_id}                 解析ジョブの進捗・結果を取得
+- GET  /videos/{video_name}               アップロードした動画の再生（解説と併用）
+- GET  /api/benchmarks                    現在のベンチマークと学習本数を確認
+- POST /api/reference/upload      [管理者] 学習用（プロ・上位ランク）動画を登録
+- GET  /api/admin/check           [管理者] トークン確認
+- GET  /api/admin/contributions   [管理者] プレイヤー提供動画（学習候補）の一覧
+- POST /api/admin/contributions/{id}/approve  [管理者] 候補を学習に反映
+- POST /api/admin/contributions/{id}/reject   [管理者] 候補を却下
+- GET  /                                  Web UI
 """
 
 from __future__ import annotations
 
+import hmac
+import os
+import secrets
 import shutil
 import threading
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +48,13 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# 管理者トークン: 環境変数がなければ起動ごとに自動生成して表示する
+ADMIN_TOKEN = os.environ.get("VALO_COACH_ADMIN_TOKEN")
+if not ADMIN_TOKEN:
+    ADMIN_TOKEN = secrets.token_urlsafe(16)
+    print(f"[VALORANT AIコーチ] 管理者トークン（自動生成）: {ADMIN_TOKEN}")
+    print("  固定したい場合は環境変数 VALO_COACH_ADMIN_TOKEN を設定してください")
+
 app = FastAPI(title="VALORANT AI Coach")
 store = BenchmarkStore(DB_PATH)
 
@@ -44,6 +63,11 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+
+def _require_admin(token: str | None) -> None:
+    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="管理者トークンが正しくありません")
 
 
 def _update_job(job_id: str, **kwargs) -> None:
@@ -66,7 +90,12 @@ def _save_upload(file: UploadFile) -> Path:
 
 
 def _run_analysis_job(job_id: str, video_path: Path, rank: str) -> None:
-    """利用者動画の解析ジョブ（別スレッドで実行）。"""
+    """利用者動画の解析ジョブ（別スレッドで実行）。
+
+    解析後も動画は残し、結果画面で再生しながら解説を確認できるようにする。
+    解析結果は学習候補（contribution）として保存し、管理者の承認後に
+    ベンチマーク学習へ反映される。
+    """
     try:
         _update_job(job_id, status="analyzing", progress=0.0)
 
@@ -79,10 +108,15 @@ def _run_analysis_job(job_id: str, video_path: Path, rank: str) -> None:
 
         target_benchmark = store.get_target_benchmark(rank)
         report = generate_full_report(rank, metrics, target_benchmark)
+        report["video_url"] = f"/videos/{video_path.name}"
+
+        # 今後の学習用に候補として保存（管理者承認後に反映）
+        contribution_id = store.add_contribution(rank, metrics, video_path.name)
+        report["contribution_id"] = contribution_id
+
         _update_job(job_id, status="done", progress=1.0, result=report)
     except Exception as e:
         _update_job(job_id, status="error", error=str(e))
-    finally:
         video_path.unlink(missing_ok=True)
 
 
@@ -148,8 +182,10 @@ async def upload_reference(
     file: UploadFile = File(...),
     rank: str = Form(...),
     label: str = Form(""),
+    x_admin_token: str | None = Header(default=None),
 ):
-    """学習用のプロ・上位ランク動画を登録する（ダイヤ帯は多めに推奨）。"""
+    """[管理者] 学習用のプロ・上位ランク動画を登録する（ダイヤ帯は多めに推奨）。"""
+    _require_admin(x_admin_token)
     try:
         rank_norm = normalize_rank(rank)
     except ValueError as e:
@@ -169,6 +205,53 @@ async def upload_reference(
         target=_run_reference_job, args=(job_id, video_path, rank_norm, label), daemon=True
     ).start()
     return {"job_id": job_id}
+
+
+@app.get("/api/admin/check")
+async def admin_check(x_admin_token: str | None = Header(default=None)):
+    """[管理者] トークンの有効性チェック（管理UIのログインに使う）。"""
+    _require_admin(x_admin_token)
+    return {"ok": True}
+
+
+@app.get("/api/admin/contributions")
+async def list_contributions(
+    status: str = "pending",
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] プレイヤー提供動画（学習候補）の一覧。"""
+    _require_admin(x_admin_token)
+    return {"contributions": store.list_contributions(status)}
+
+
+@app.post("/api/admin/contributions/{contribution_id}/approve")
+async def approve_contribution(
+    contribution_id: int,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] 学習候補を承認してベンチマーク学習に反映する。"""
+    _require_admin(x_admin_token)
+    try:
+        result = store.approve_contribution(contribution_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    result["reference_counts"] = store.reference_counts()
+    return result
+
+
+@app.post("/api/admin/contributions/{contribution_id}/reject")
+async def reject_contribution(
+    contribution_id: int,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] 学習候補を却下する。"""
+    _require_admin(x_admin_token)
+    try:
+        return store.reject_contribution(contribution_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/jobs/{job_id}")
@@ -196,4 +279,6 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+# アップロード動画の再生（Rangeリクエスト対応のためStaticFilesで配信）
+app.mount("/videos", StaticFiles(directory=UPLOAD_DIR), name="videos")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

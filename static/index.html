@@ -35,7 +35,7 @@
   .tabs button.active { background: var(--accent); border-color: var(--accent); font-weight: bold; }
   .panel { background: var(--panel); border-radius: 0 8px 8px 8px; padding: 24px; }
   label { display: block; margin: 14px 0 6px; font-size: 14px; color: var(--muted); }
-  select, input[type=file], input[type=text] {
+  select, input[type=file], input[type=text], input[type=password] {
     width: 100%; padding: 10px; background: var(--panel2); color: var(--text);
     border: 1px solid #34434f; border-radius: 6px; font-size: 14px;
   }
@@ -44,6 +44,13 @@
     padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 6px; cursor: pointer;
   }
   .submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-small {
+    background: var(--panel2); color: var(--text); border: 1px solid #34434f;
+    padding: 5px 12px; font-size: 12px; border-radius: 4px; cursor: pointer;
+  }
+  .btn-small:hover { border-color: var(--accent); }
+  .btn-approve { border-color: var(--good); color: var(--good); }
+  .btn-reject { border-color: var(--warn); color: var(--warn); }
   .progress-wrap { margin-top: 20px; display: none; }
   .progress-bar { height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; }
   .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width .5s; }
@@ -57,7 +64,7 @@
   li { margin: 4px 0; font-size: 14px; line-height: 1.7; }
   .round-card { border-left: 3px solid #34434f; padding: 10px 14px; margin: 8px 0; background: #202d3a; border-radius: 4px; }
   .round-card.flagged { border-left-color: var(--warn); }
-  .round-head { display: flex; gap: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .round-head { display: flex; gap: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; align-items: center; }
   .round-head b { color: var(--text); font-size: 14px; }
   .ai-report { white-space: pre-wrap; font-size: 14px; line-height: 1.9; }
   .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
@@ -65,6 +72,13 @@
   th, td { padding: 8px 10px; border-bottom: 1px solid #34434f; text-align: left; }
   th { color: var(--muted); font-weight: normal; }
   .error-box { background: #3a2028; border: 1px solid var(--accent); padding: 12px 16px; border-radius: 6px; margin-top: 16px; display: none; }
+  .video-sticky {
+    position: sticky; top: 0; z-index: 10; background: var(--panel);
+    padding: 10px 0; margin-bottom: 10px;
+  }
+  video { width: 100%; max-height: 420px; background: #000; border-radius: 8px; }
+  .video-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .admin-badge { font-size: 12px; color: var(--good); }
 </style>
 </head>
 <body>
@@ -75,7 +89,7 @@
 <main>
   <div class="tabs">
     <button id="tab-coach" class="active">コーチングを受ける</button>
-    <button id="tab-train">学習動画を登録する</button>
+    <button id="tab-train">管理者（学習データ）</button>
   </div>
 
   <!-- コーチングタブ -->
@@ -83,12 +97,16 @@
     <p style="font-size:14px; line-height:1.8; color:var(--muted)">
       自分でプレーした<b style="color:var(--text)">1試合分（30分〜1時間程度）</b>の動画をアップロードし、
       現在のランクを選択してください。学習済みの上位ランク帯のプレーと比較して、
-      良かった点・改善点をラウンドごとに分析します。
+      良かった点・改善点をラウンドごとに分析します。<br>
+      解析結果の画面では、<b style="color:var(--text)">アップロードした動画を再生しながら</b>各ラウンドの解説を確認できます。
     </p>
     <label>現在のランク</label>
     <select id="coach-rank"></select>
     <label>試合動画（mp4 / mov / mkv / webm / avi）</label>
     <input type="file" id="coach-file" accept="video/*">
+    <p class="note">
+      ※ アップロードされた動画の解析結果は、運営者の確認を経て今後のコーチング精度向上（ランク帯別の学習データ）に活用されることがあります。
+    </p>
     <button class="submit" id="coach-submit">解析してコーチングを受ける</button>
 
     <div class="progress-wrap" id="coach-progress">
@@ -98,6 +116,10 @@
     <div class="error-box" id="coach-error"></div>
 
     <div class="result" id="coach-result">
+      <div class="video-sticky" id="video-wrap" style="display:none">
+        <video id="match-video" controls preload="metadata"></video>
+        <div class="video-hint">▶ 各ラウンドの「この場面を見る」を押すと該当シーンにジャンプします</div>
+      </div>
       <div class="card">
         <h3>総合評価</h3>
         <div id="res-summary"></div>
@@ -119,7 +141,7 @@
         <div id="res-rounds"></div>
         <p class="note">
           ※ ラウンド区切りと交戦は画面変化・キルフィードの自動検出によるもので、
-          実際のラウンドとずれる場合があります。時刻表示（動画内の分:秒）を目安に動画を見返してください。
+          実際のラウンドとずれる場合があります。「この場面を見る」で動画の該当箇所を確認してください。
         </p>
       </div>
       <div class="card" id="res-ai-card" style="display:none">
@@ -129,33 +151,67 @@
     </div>
   </section>
 
-  <!-- 学習タブ -->
+  <!-- 管理者タブ -->
   <section id="panel-train" class="panel" style="display:none">
-    <p style="font-size:14px; line-height:1.8; color:var(--muted)">
-      プロやランク上位プレイヤーの試合動画を登録すると、そのランク帯の「お手本」として学習し、
-      コーチングの比較基準（ベンチマーク）が実測値に更新されます。<br>
-      <b style="color:var(--text)">ゴールド→プラチナ帯の利用者が多いため、ダイヤモンド帯の動画を多めに登録するのがおすすめです。</b>
-    </p>
-    <label>この動画のランク帯</label>
-    <select id="train-rank"></select>
-    <label>メモ（任意: プレイヤー名・マップなど）</label>
-    <input type="text" id="train-label" placeholder="例: プロ選手A アセント">
-    <label>試合動画</label>
-    <input type="file" id="train-file" accept="video/*">
-    <button class="submit" id="train-submit">学習に追加する</button>
 
-    <div class="progress-wrap" id="train-progress">
-      <div class="progress-bar"><div class="progress-fill" id="train-fill"></div></div>
-      <div class="progress-label" id="train-status">アップロード中...</div>
+    <!-- ログイン -->
+    <div id="admin-login">
+      <p style="font-size:14px; line-height:1.8; color:var(--muted)">
+        このタブはサイト運営者専用です。学習動画の登録と、プレイヤー提供動画の学習への反映を行います。<br>
+        サーバー起動時に表示される管理者トークン（または環境変数 <code>VALO_COACH_ADMIN_TOKEN</code> の値）を入力してください。
+      </p>
+      <label>管理者トークン</label>
+      <input type="password" id="admin-token" placeholder="管理者トークンを入力">
+      <button class="submit" id="admin-login-btn">ログイン</button>
+      <div class="error-box" id="admin-error"></div>
     </div>
-    <div class="error-box" id="train-error"></div>
 
-    <div class="card" style="margin-top:24px">
-      <h3>学習状況</h3>
-      <table id="bench-table">
-        <thead><tr><th>ランク帯</th><th>学習本数</th><th>初動交戦(秒)</th><th>交戦/R</th><th>基準</th></tr></thead>
-        <tbody></tbody>
-      </table>
+    <!-- 管理機能本体 -->
+    <div id="admin-body" style="display:none">
+      <p class="admin-badge">✓ 管理者としてログイン中</p>
+
+      <div class="card" style="margin-top:16px">
+        <h3>学習動画を登録する</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          プロやランク上位プレイヤーの試合動画を登録すると、そのランク帯の「お手本」として学習し、
+          コーチングの比較基準（ベンチマーク）が実測値に更新されます。<br>
+          <b style="color:var(--text)">ゴールド→プラチナ帯の利用者が多いため、ダイヤモンド帯の動画を多めに登録するのがおすすめです。</b>
+        </p>
+        <label>この動画のランク帯</label>
+        <select id="train-rank"></select>
+        <label>メモ（任意: プレイヤー名・マップなど）</label>
+        <input type="text" id="train-label" placeholder="例: プロ選手A アセント">
+        <label>試合動画</label>
+        <input type="file" id="train-file" accept="video/*">
+        <button class="submit" id="train-submit">学習に追加する</button>
+
+        <div class="progress-wrap" id="train-progress">
+          <div class="progress-bar"><div class="progress-fill" id="train-fill"></div></div>
+          <div class="progress-label" id="train-status">アップロード中...</div>
+        </div>
+        <div class="error-box" id="train-error"></div>
+      </div>
+
+      <div class="card">
+        <h3>プレイヤー提供動画のレビュー</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          プレイヤーがコーチング依頼時にアップロードした動画の解析結果です。
+          申告ランクが妥当だと判断したものを「承認」すると、そのランク帯の学習データに追加されます。
+        </p>
+        <table id="contrib-table">
+          <thead><tr><th>ID</th><th>申告ランク</th><th>ラウンド数</th><th>初動(秒)</th><th>交戦/R</th><th>動画</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="note" id="contrib-empty" style="display:none">未レビューの提供動画はありません。</p>
+      </div>
+
+      <div class="card">
+        <h3>学習状況</h3>
+        <table id="bench-table">
+          <thead><tr><th>ランク帯</th><th>学習本数</th><th>初動交戦(秒)</th><th>交戦/R</th><th>基準</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 </main>
@@ -165,6 +221,8 @@ const fmtTime = (sec) => {
   const m = Math.floor(sec / 60), s = Math.round(sec % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
 };
+
+let adminToken = localStorage.getItem("valo_admin_token") || "";
 
 async function loadRanks() {
   const res = await fetch("/api/benchmarks");
@@ -204,9 +262,10 @@ function switchTab(name) {
   document.getElementById("panel-train").style.display = name === "train" ? "" : "none";
   document.getElementById("tab-coach").classList.toggle("active", name === "coach");
   document.getElementById("tab-train").classList.toggle("active", name === "train");
+  if (name === "train" && adminToken) tryAdminLogin(adminToken, true);
 }
 
-async function submitJob({ url, fileInput, rank, label, prefix, onDone }) {
+async function submitJob({ url, fileInput, rank, label, prefix, headers, onDone }) {
   const file = document.getElementById(fileInput).files[0];
   const errBox = document.getElementById(prefix + "-error");
   errBox.style.display = "none";
@@ -223,7 +282,7 @@ async function submitJob({ url, fileInput, rank, label, prefix, onDone }) {
   if (label !== undefined) form.append("label", label);
 
   try {
-    const res = await fetch(url, { method: "POST", body: form });
+    const res = await fetch(url, { method: "POST", body: form, headers: headers || {} });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `アップロードに失敗しました (${res.status})`);
@@ -270,8 +329,23 @@ document.getElementById("coach-submit").onclick = () =>
     onDone: renderReport,
   });
 
+function seekVideo(sec) {
+  const video = document.getElementById("match-video");
+  video.currentTime = Math.max(0, sec);
+  video.play();
+  document.getElementById("video-wrap").scrollIntoView({ behavior: "smooth" });
+}
+
 function renderReport(rep) {
   document.getElementById("coach-result").style.display = "block";
+
+  // 動画プレイヤー（解説と併用）
+  if (rep.video_url) {
+    const wrap = document.getElementById("video-wrap");
+    wrap.style.display = "";
+    document.getElementById("match-video").src = rep.video_url;
+  }
+
   const s = rep.match_summary;
   document.getElementById("res-summary").innerHTML =
     `<p style="font-size:14px;line-height:1.9">現在のランク: <b>${rep.user_rank}</b> ／ 目標: <b>${rep.target_rank}</b>` +
@@ -304,9 +378,15 @@ function renderReport(rep) {
       `<span>${fmtTime(r.start_sec)} 〜 ${fmtTime(r.end_sec)}</span>` +
       `<span>交戦 ${r.engagement_count}回</span>` +
       (r.first_engagement_sec != null ? `<span>初動 ${Math.round(r.first_engagement_sec)}秒</span>` : "") +
+      (rep.video_url ? `<button class="btn-small" data-seek="${r.start_sec}">▶ この場面を見る</button>` : "") +
+      (rep.video_url && r.first_engagement_sec != null
+        ? `<button class="btn-small" data-seek="${r.start_sec + r.first_engagement_sec - 3}">▶ 初動交戦を見る</button>` : "") +
       `</div><ul>${r.notes.map(n => `<li>${n}</li>`).join("")}</ul>`;
     roundsDiv.appendChild(div);
   }
+  roundsDiv.querySelectorAll("button[data-seek]").forEach(btn => {
+    btn.onclick = () => seekVideo(parseFloat(btn.dataset.seek));
+  });
 
   if (rep.ai_report) {
     document.getElementById("res-ai-card").style.display = "";
@@ -319,7 +399,74 @@ function renderReport(rep) {
   document.getElementById("coach-result").scrollIntoView({ behavior: "smooth" });
 }
 
-// ---- 学習 ----
+// ---- 管理者ログイン ----
+document.getElementById("admin-login-btn").onclick = () =>
+  tryAdminLogin(document.getElementById("admin-token").value, false);
+
+async function tryAdminLogin(token, silent) {
+  const errBox = document.getElementById("admin-error");
+  errBox.style.display = "none";
+  const res = await fetch("/api/admin/check", { headers: { "X-Admin-Token": token } });
+  if (!res.ok) {
+    localStorage.removeItem("valo_admin_token");
+    adminToken = "";
+    if (!silent) {
+      errBox.textContent = "トークンが正しくありません。";
+      errBox.style.display = "block";
+    }
+    document.getElementById("admin-login").style.display = "";
+    document.getElementById("admin-body").style.display = "none";
+    return;
+  }
+  adminToken = token;
+  localStorage.setItem("valo_admin_token", token);
+  document.getElementById("admin-login").style.display = "none";
+  document.getElementById("admin-body").style.display = "";
+  await refreshAdminData();
+}
+
+async function refreshAdminData() {
+  const [benchRes, contribRes] = await Promise.all([
+    fetch("/api/benchmarks"),
+    fetch("/api/admin/contributions", { headers: { "X-Admin-Token": adminToken } }),
+  ]);
+  renderBenchTable(await benchRes.json());
+  renderContribTable((await contribRes.json()).contributions);
+}
+
+function renderContribTable(items) {
+  const tbody = document.querySelector("#contrib-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("contrib-empty").style.display = items.length ? "none" : "";
+  for (const c of items) {
+    const tr = document.createElement("tr");
+    const videoLink = c.video_name
+      ? `<a href="/videos/${c.video_name}" target="_blank" style="color:var(--accent)">再生</a>` : "-";
+    tr.innerHTML =
+      `<td>${c.id}</td><td>${c.rank}</td><td>${c.round_count}</td>` +
+      `<td>${c.avg_first_engagement_sec}</td><td>${c.avg_engagements_per_round}</td>` +
+      `<td>${videoLink}</td>` +
+      `<td><button class="btn-small btn-approve" data-id="${c.id}" data-act="approve">承認</button> ` +
+      `<button class="btn-small btn-reject" data-id="${c.id}" data-act="reject">却下</button></td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("button[data-act]").forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const res = await fetch(
+        `/api/admin/contributions/${btn.dataset.id}/${btn.dataset.act}`,
+        { method: "POST", headers: { "X-Admin-Token": adminToken } },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "操作に失敗しました");
+      }
+      await refreshAdminData();
+    };
+  });
+}
+
+// ---- 学習動画登録（管理者） ----
 document.getElementById("train-submit").onclick = () =>
   submitJob({
     url: "/api/reference/upload",
@@ -327,9 +474,9 @@ document.getElementById("train-submit").onclick = () =>
     rank: document.getElementById("train-rank").value,
     label: document.getElementById("train-label").value,
     prefix: "train",
+    headers: { "X-Admin-Token": adminToken },
     onDone: async () => {
-      const res = await fetch("/api/benchmarks");
-      renderBenchTable(await res.json());
+      await refreshAdminData();
       setProgress("train", 1, "学習に追加しました");
     },
   });
