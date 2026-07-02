@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VALORANT AIコーチ</title>
+<style>
+  :root {
+    --bg: #0f1923;
+    --panel: #1c2733;
+    --panel2: #253341;
+    --accent: #ff4655;
+    --text: #ece8e1;
+    --muted: #8b978f;
+    --good: #33c48d;
+    --warn: #f5a623;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header {
+    padding: 20px 24px; border-bottom: 2px solid var(--accent);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: 2px; }
+  header span { color: var(--muted); font-size: 13px; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 16px 80px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tabs button {
+    background: var(--panel); color: var(--text); border: 1px solid #34434f;
+    padding: 10px 18px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 14px;
+  }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); font-weight: bold; }
+  .panel { background: var(--panel); border-radius: 0 8px 8px 8px; padding: 24px; }
+  label { display: block; margin: 14px 0 6px; font-size: 14px; color: var(--muted); }
+  select, input[type=file], input[type=text] {
+    width: 100%; padding: 10px; background: var(--panel2); color: var(--text);
+    border: 1px solid #34434f; border-radius: 6px; font-size: 14px;
+  }
+  .submit {
+    margin-top: 20px; background: var(--accent); color: #fff; border: none;
+    padding: 12px 28px; font-size: 15px; font-weight: bold; border-radius: 6px; cursor: pointer;
+  }
+  .submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .progress-wrap { margin-top: 20px; display: none; }
+  .progress-bar { height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width .5s; }
+  .progress-label { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .result { margin-top: 28px; display: none; }
+  .card { background: var(--panel2); border-radius: 8px; padding: 16px 20px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 16px; border-left: 4px solid var(--accent); padding-left: 10px; }
+  .good { color: var(--good); }
+  .warn { color: var(--warn); }
+  ul { margin: 6px 0; padding-left: 22px; }
+  li { margin: 4px 0; font-size: 14px; line-height: 1.7; }
+  .round-card { border-left: 3px solid #34434f; padding: 10px 14px; margin: 8px 0; background: #202d3a; border-radius: 4px; }
+  .round-card.flagged { border-left-color: var(--warn); }
+  .round-head { display: flex; gap: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .round-head b { color: var(--text); font-size: 14px; }
+  .ai-report { white-space: pre-wrap; font-size: 14px; line-height: 1.9; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #34434f; text-align: left; }
+  th { color: var(--muted); font-weight: normal; }
+  .error-box { background: #3a2028; border: 1px solid var(--accent); padding: 12px 16px; border-radius: 6px; margin-top: 16px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VALORANT AIコーチ</h1>
+  <span>1試合分の動画からランクアップのためのコーチングを行います</span>
+</header>
+<main>
+  <div class="tabs">
+    <button id="tab-coach" class="active">コーチングを受ける</button>
+    <button id="tab-train">学習動画を登録する</button>
+  </div>
+
+  <!-- コーチングタブ -->
+  <section id="panel-coach" class="panel">
+    <p style="font-size:14px; line-height:1.8; color:var(--muted)">
+      自分でプレーした<b style="color:var(--text)">1試合分（30分〜1時間程度）</b>の動画をアップロードし、
+      現在のランクを選択してください。学習済みの上位ランク帯のプレーと比較して、
+      良かった点・改善点をラウンドごとに分析します。
+    </p>
+    <label>現在のランク</label>
+    <select id="coach-rank"></select>
+    <label>試合動画（mp4 / mov / mkv / webm / avi）</label>
+    <input type="file" id="coach-file" accept="video/*">
+    <button class="submit" id="coach-submit">解析してコーチングを受ける</button>
+
+    <div class="progress-wrap" id="coach-progress">
+      <div class="progress-bar"><div class="progress-fill" id="coach-fill"></div></div>
+      <div class="progress-label" id="coach-status">アップロード中...</div>
+    </div>
+    <div class="error-box" id="coach-error"></div>
+
+    <div class="result" id="coach-result">
+      <div class="card">
+        <h3>総合評価</h3>
+        <div id="res-summary"></div>
+      </div>
+      <div class="card">
+        <h3 class="good">良かった点</h3>
+        <ul id="res-good"></ul>
+      </div>
+      <div class="card">
+        <h3 class="warn">改善点</h3>
+        <ul id="res-warn"></ul>
+      </div>
+      <div class="card">
+        <h3>次のランク帯に上がるための重点ポイント</h3>
+        <ul id="res-focus"></ul>
+      </div>
+      <div class="card">
+        <h3>ラウンド別分析</h3>
+        <div id="res-rounds"></div>
+        <p class="note">
+          ※ ラウンド区切りと交戦は画面変化・キルフィードの自動検出によるもので、
+          実際のラウンドとずれる場合があります。時刻表示（動画内の分:秒）を目安に動画を見返してください。
+        </p>
+      </div>
+      <div class="card" id="res-ai-card" style="display:none">
+        <h3>AIコーチからの詳細レポート</h3>
+        <div class="ai-report" id="res-ai"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 学習タブ -->
+  <section id="panel-train" class="panel" style="display:none">
+    <p style="font-size:14px; line-height:1.8; color:var(--muted)">
+      プロやランク上位プレイヤーの試合動画を登録すると、そのランク帯の「お手本」として学習し、
+      コーチングの比較基準（ベンチマーク）が実測値に更新されます。<br>
+      <b style="color:var(--text)">ゴールド→プラチナ帯の利用者が多いため、ダイヤモンド帯の動画を多めに登録するのがおすすめです。</b>
+    </p>
+    <label>この動画のランク帯</label>
+    <select id="train-rank"></select>
+    <label>メモ（任意: プレイヤー名・マップなど）</label>
+    <input type="text" id="train-label" placeholder="例: プロ選手A アセント">
+    <label>試合動画</label>
+    <input type="file" id="train-file" accept="video/*">
+    <button class="submit" id="train-submit">学習に追加する</button>
+
+    <div class="progress-wrap" id="train-progress">
+      <div class="progress-bar"><div class="progress-fill" id="train-fill"></div></div>
+      <div class="progress-label" id="train-status">アップロード中...</div>
+    </div>
+    <div class="error-box" id="train-error"></div>
+
+    <div class="card" style="margin-top:24px">
+      <h3>学習状況</h3>
+      <table id="bench-table">
+        <thead><tr><th>ランク帯</th><th>学習本数</th><th>初動交戦(秒)</th><th>交戦/R</th><th>基準</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const fmtTime = (sec) => {
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+};
+
+async function loadRanks() {
+  const res = await fetch("/api/benchmarks");
+  const data = await res.json();
+  for (const id of ["coach-rank", "train-rank"]) {
+    const sel = document.getElementById(id);
+    sel.innerHTML = "";
+    for (const r of data.ranks) {
+      const opt = document.createElement("option");
+      opt.value = r; opt.textContent = r;
+      sel.appendChild(opt);
+    }
+  }
+  document.getElementById("coach-rank").value = "ゴールド";
+  document.getElementById("train-rank").value = "ダイヤモンド";
+  renderBenchTable(data);
+}
+
+function renderBenchTable(data) {
+  const tbody = document.querySelector("#bench-table tbody");
+  tbody.innerHTML = "";
+  for (const r of data.ranks) {
+    const b = data.benchmarks[r];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r}</td><td>${data.reference_counts[r] || 0}</td>` +
+      `<td>${b.avg_first_engagement_sec}</td><td>${b.avg_engagements_per_round}</td>` +
+      `<td>${b.source === "learned" ? "実測" : "初期値"}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+// タブ切り替え
+document.getElementById("tab-coach").onclick = () => switchTab("coach");
+document.getElementById("tab-train").onclick = () => switchTab("train");
+function switchTab(name) {
+  document.getElementById("panel-coach").style.display = name === "coach" ? "" : "none";
+  document.getElementById("panel-train").style.display = name === "train" ? "" : "none";
+  document.getElementById("tab-coach").classList.toggle("active", name === "coach");
+  document.getElementById("tab-train").classList.toggle("active", name === "train");
+}
+
+async function submitJob({ url, fileInput, rank, label, prefix, onDone }) {
+  const file = document.getElementById(fileInput).files[0];
+  const errBox = document.getElementById(prefix + "-error");
+  errBox.style.display = "none";
+  if (!file) { errBox.textContent = "動画ファイルを選択してください。"; errBox.style.display = "block"; return; }
+
+  const btn = document.getElementById(prefix + "-submit");
+  btn.disabled = true;
+  document.getElementById(prefix + "-progress").style.display = "block";
+  setProgress(prefix, 0, "アップロード中...（動画サイズによっては数分かかります）");
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("rank", rank);
+  if (label !== undefined) form.append("label", label);
+
+  try {
+    const res = await fetch(url, { method: "POST", body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `アップロードに失敗しました (${res.status})`);
+    }
+    const { job_id } = await res.json();
+    await pollJob(job_id, prefix, onDone);
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function setProgress(prefix, ratio, text) {
+  document.getElementById(prefix + "-fill").style.width = `${Math.round(ratio * 100)}%`;
+  document.getElementById(prefix + "-status").textContent = text;
+}
+
+async function pollJob(jobId, prefix, onDone) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 2000));
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const job = await res.json();
+    if (job.status === "error") throw new Error("解析エラー: " + job.error);
+    const label = {
+      queued: "順番待ち...",
+      analyzing: "動画を解析中...（ラウンド検出・交戦検出）",
+      coaching: "コーチングレポートを生成中...",
+      done: "完了",
+    }[job.status] || job.status;
+    setProgress(prefix, job.progress || 0, label);
+    if (job.status === "done") { onDone(job.result); return; }
+  }
+}
+
+// ---- コーチング ----
+document.getElementById("coach-submit").onclick = () =>
+  submitJob({
+    url: "/api/analyze",
+    fileInput: "coach-file",
+    rank: document.getElementById("coach-rank").value,
+    prefix: "coach",
+    onDone: renderReport,
+  });
+
+function renderReport(rep) {
+  document.getElementById("coach-result").style.display = "block";
+  const s = rep.match_summary;
+  document.getElementById("res-summary").innerHTML =
+    `<p style="font-size:14px;line-height:1.9">現在のランク: <b>${rep.user_rank}</b> ／ 目標: <b>${rep.target_rank}</b>` +
+    `（比較基準: ${rep.benchmark.source === "learned" ? `学習動画${rep.benchmark.sample_count}本の実測値` : "初期値"}）<br>` +
+    `検出ラウンド数: <b>${s.round_count}</b> ／ 平均初動交戦: <b>${s.avg_first_engagement_sec}秒</b>` +
+    `（${rep.target_rank}帯の基準: ${rep.benchmark.avg_first_engagement_sec}秒） ／ ` +
+    `交戦/ラウンド: <b>${s.avg_engagements_per_round}</b>（基準: ${rep.benchmark.avg_engagements_per_round}）</p>`;
+
+  const fill = (id, items, fallback) => {
+    const ul = document.getElementById(id);
+    ul.innerHTML = "";
+    for (const t of (items.length ? items : [fallback])) {
+      const li = document.createElement("li");
+      li.textContent = t;
+      ul.appendChild(li);
+    }
+  };
+  fill("res-good", rep.good_points, "指標上、上位帯と大きな差がある点は検出されませんでした。");
+  fill("res-warn", rep.improvement_points, "指標上の大きな問題は検出されませんでした。フォーカスポイントを参考に精度を高めましょう。");
+  fill("res-focus", rep.focus_points, "");
+
+  const roundsDiv = document.getElementById("res-rounds");
+  roundsDiv.innerHTML = "";
+  for (const r of rep.rounds) {
+    const flagged = r.notes.some(n => !n.startsWith("特筆"));
+    const div = document.createElement("div");
+    div.className = "round-card" + (flagged ? " flagged" : "");
+    div.innerHTML =
+      `<div class="round-head"><b>第${r.round}ラウンド</b>` +
+      `<span>${fmtTime(r.start_sec)} 〜 ${fmtTime(r.end_sec)}</span>` +
+      `<span>交戦 ${r.engagement_count}回</span>` +
+      (r.first_engagement_sec != null ? `<span>初動 ${Math.round(r.first_engagement_sec)}秒</span>` : "") +
+      `</div><ul>${r.notes.map(n => `<li>${n}</li>`).join("")}</ul>`;
+    roundsDiv.appendChild(div);
+  }
+
+  if (rep.ai_report) {
+    document.getElementById("res-ai-card").style.display = "";
+    document.getElementById("res-ai").textContent = rep.ai_report;
+  } else if (!rep.ai_enabled) {
+    document.getElementById("res-ai-card").style.display = "";
+    document.getElementById("res-ai").textContent =
+      "（AI詳細レポートはサーバーに ANTHROPIC_API_KEY を設定すると有効になります）";
+  }
+  document.getElementById("coach-result").scrollIntoView({ behavior: "smooth" });
+}
+
+// ---- 学習 ----
+document.getElementById("train-submit").onclick = () =>
+  submitJob({
+    url: "/api/reference/upload",
+    fileInput: "train-file",
+    rank: document.getElementById("train-rank").value,
+    label: document.getElementById("train-label").value,
+    prefix: "train",
+    onDone: async () => {
+      const res = await fetch("/api/benchmarks");
+      renderBenchTable(await res.json());
+      setProgress("train", 1, "学習に追加しました");
+    },
+  });
+
+loadRanks();
+</script>
+</body>
+</html>
