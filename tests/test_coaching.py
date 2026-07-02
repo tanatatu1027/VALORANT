@@ -76,3 +76,26 @@ def test_build_rule_based_report_structure():
     assert report["improvement_points"]  # 初動10秒はwarnになる
     assert report["focus_points"]
     assert len(report["rounds"]) == 2
+
+
+def test_report_includes_evaluation_axes():
+    report = build_rule_based_report("ゴールド", _metrics(), TARGET | {
+        "rank": "プラチナ", "source": "default", "sample_count": 0,
+    })
+    axes = report["evaluation_axes"]
+    ids = {a["id"] for a in axes}
+    # 立ち回り4観点 + 撃ち合い2観点
+    assert ids == {"minimap", "cover_line", "skill_usage", "agent_fit", "peek", "shooting"}
+    for a in axes:
+        assert a["category"] in ("立ち回り", "撃ち合い")
+        assert a["check_items"]
+
+
+def test_ai_prompt_covers_requested_axes():
+    """AIコーチのプロンプトが指定された評価観点を網羅していること。"""
+    from app.coaching import AI_SYSTEM_PROMPT
+    for keyword in [
+        "ミニマップ", "カバーライン", "スキル", "エージェント",
+        "ピーク", "撃ち方", "立ち回り", "ストッピング", "トレード",
+    ]:
+        assert keyword in AI_SYSTEM_PROMPT, f"プロンプトに「{keyword}」がありません"

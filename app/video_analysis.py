@@ -29,7 +29,7 @@ MAX_ROUND_SEC = 200.0       # ラウンドの最長長（スパイク設置込�
 SCENE_CHANGE_PERCENTILE = 92  # シーンチェンジとみなす差分スコアの百分位
 SCENE_CHANGE_MIN_SCORE = 0.35  # 通常のプレー中の画面変化を境界候補にしないための下限
 EVENT_GAP_SEC = 4.0         # キルフィードイベントを同一交戦とみなす間隔
-MAX_KEYFRAMES_PER_ROUND = 2  # AIに渡す代表フレーム数/ラウンド
+MAX_KEYFRAMES_PER_ROUND = 3  # AIに渡す代表フレーム数/ラウンド
 KEYFRAME_MAX_WIDTH = 960    # 代表フレームの最大幅（トークン節約のため縮小）
 
 
@@ -322,8 +322,13 @@ def _collect_keyframes(
             t for t, f in zip(timestamps, activity_flags)
             if r.start_sec <= t < r.end_sec and f
         ]
-        picks = in_round[:MAX_KEYFRAMES_PER_ROUND]
-        if not picks:
+        if in_round:
+            # 連続した交戦フレームばかりにならないよう、交戦シーン全体から
+            # 均等に分散させて選ぶ（ラウンド序盤/中盤/終盤の様子が伝わるように）
+            n = min(MAX_KEYFRAMES_PER_ROUND, len(in_round))
+            step = len(in_round) / n
+            picks = [in_round[int(i * step)] for i in range(n)]
+        else:
             picks = [(r.start_sec + r.end_sec) / 2]
         wanted.extend((r.index, sec) for sec in picks)
 
