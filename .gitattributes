@@ -1,0 +1,3 @@
+# Windows用バッチファイルは改行・文字コードを変換しない
+start.bat -text
+*.bat text eol=crlf
