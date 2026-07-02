@@ -49,6 +49,36 @@ Python 3.11以上がインストールされていれば、同梱の起動スク
 起動後、ブラウザで http://localhost:8000 を開いてください。
 管理者トークンは起動時のコンソールに表示されます。
 
+### 起動できないときは
+
+**「Pythonが見つかりません」と表示される（Windows）**
+
+1. https://www.python.org/downloads/ から「Download Python 3.x」でインストーラーを取得
+2. インストール画面の最初で **「Add python.exe to PATH」に必ずチェック** を入れて「Install Now」
+3. インストール後、もう一度 `start.bat` をダブルクリック
+
+チェックを入れ忘れた場合は、Pythonをアンインストールして入れ直すのが確実です。
+「python」と打つとMicrosoft Storeが開いてしまう場合は、
+「設定 → アプリ → アプリ実行エイリアス」で python.exe / python3.exe をオフにしてください。
+
+**黒い画面が一瞬出てすぐ消える（Windows）**
+
+エラーメッセージを確認するため、コマンドプロンプトを開いて
+解凍したフォルダに移動し（`cd フォルダのパス`）、`start.bat` と入力して実行してください。
+表示されたエラーメッセージが手掛かりになります。
+
+**Mac / Linux で `./start.sh` が「permission denied」になる**
+
+`bash start.sh` で実行してください。
+
+**「仮想環境の作成に失敗しました」(Ubuntu/Debian)**
+
+`sudo apt install python3-venv python3-pip` を実行してから再試行してください。
+
+**途中で失敗した後、やり直したい**
+
+解凍したフォルダ内の `.venv` フォルダを削除してから、もう一度起動スクリプトを実行してください。
+
 ### 手動セットアップ
 
 ```bash
