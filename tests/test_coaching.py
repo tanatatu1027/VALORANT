@@ -30,13 +30,21 @@ def _metrics(first=30.0, engagements=4.0, duration=105.0) -> MatchMetrics:
     return m
 
 
-def test_compare_metrics_flags_early_engagement():
+def test_compare_metrics_flags_only_extremely_early_engagement():
+    """初動は参考扱い: 基準の半分未満のときだけ柔らかく指摘する。"""
+    # 基準30秒に対して12秒（半分未満）→ warn（ただし文言は参考トーン）
     user = {"avg_first_engagement_sec": 12.0, "avg_engagements_per_round": 4.0,
             "avg_round_duration_sec": 105.0}
     findings = compare_metrics(user, TARGET)
     by_metric = {f["metric"]: f for f in findings}
     assert by_metric["avg_first_engagement_sec"]["verdict"] == "warn"
+    assert "参考" in by_metric["avg_first_engagement_sec"]["comment"]
     assert by_metric["avg_engagements_per_round"]["verdict"] == "good"
+
+    # 基準30秒に対して20秒（15%以上早いが半分以上）→ warnにしない
+    user2 = dict(user, avg_first_engagement_sec=20.0)
+    by_metric2 = {f["metric"]: f for f in compare_metrics(user2, TARGET)}
+    assert by_metric2["avg_first_engagement_sec"]["verdict"] == "good"
 
 
 def test_compare_metrics_all_good_when_close():
@@ -61,10 +69,13 @@ def test_analyze_rounds_flags_no_engagement():
     assert any("交戦が検出されませんでした" in n for n in rounds[1]["notes"])
 
 
-def test_analyze_rounds_flags_early_fight():
+def test_analyze_rounds_early_fight_is_reference_only():
+    """極端に早い初動は「参考」として添えるだけで、評価は下げない。"""
     m = _metrics(first=5.0)
     rounds = analyze_rounds(m, TARGET)
-    assert any("初動が早すぎる" in n for n in rounds[0]["notes"])
+    assert any("参考" in n for n in rounds[0]["notes"])
+    # 参考情報のみなので△ではなく○
+    assert rounds[0]["rating"] == "○"
 
 
 def test_build_rule_based_report_structure():
@@ -92,7 +103,10 @@ def test_report_includes_evaluation_axes():
 
 
 def test_round_rating_symbols():
-    """簡易評価: 問題なし+規律的な初動=◎、問題なし=○、問題1件=△、2件以上=✖。"""
+    """簡易評価: 大きな問題2件以上=✖、1件=△、なし=◎（参考情報ありなら○）。
+
+    初動タイミングは評価を下げる要因にしない（参考情報のみ）。
+    """
     from app.video_analysis import RoundMetrics
 
     def one_round(first, engagements, duration):
@@ -103,14 +117,15 @@ def test_round_rating_symbols():
         ])
         return analyze_rounds(m, TARGET)[0]
 
-    # 初動30秒(基準通り)・交戦4回・通常の長さ → ◎
+    # 問題なし → ◎（初動20秒でも基準30秒との差は評価に影響しない）
     assert one_round(30.0, 4, 100.0)["rating"] == "◎"
-    # 初動20秒(基準30秒の0.8倍未満だが早すぎ判定の0.5倍以上) → 問題0件で○
-    assert one_round(20.0, 4, 100.0)["rating"] == "○"
-    # 初動10秒(早すぎ=問題1件) → △
-    assert one_round(10.0, 4, 100.0)["rating"] == "△"
-    # 初動10秒 + 交戦8回(問題2件) → ✖
-    assert one_round(10.0, 8, 100.0)["rating"] == "✖"
+    assert one_round(20.0, 4, 100.0)["rating"] == "◎"
+    # 極端に早い初動（基準の35%未満）は参考情報のみ → ○止まり（△にしない）
+    assert one_round(8.0, 4, 100.0)["rating"] == "○"
+    # 交戦過多（大きな問題1件） → △
+    assert one_round(30.0, 8, 100.0)["rating"] == "△"
+    # 交戦過多 + 短いラウンド（大きな問題2件） → ✖
+    assert one_round(30.0, 8, 40.0)["rating"] == "✖"
 
 
 def test_round_rating_included_in_report():

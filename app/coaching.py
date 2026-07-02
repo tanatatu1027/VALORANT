@@ -34,14 +34,15 @@ def compare_metrics(user: dict, target: dict) -> list[dict]:
     """
     findings: list[dict] = []
 
-    def add(metric: str, comment_bad: str, comment_good: str, lower_is_risky: bool):
+    def add(metric: str, comment_bad: str, comment_good: str, lower_is_risky: bool,
+            threshold: float = DIFF_THRESHOLD):
         u = user.get(metric)
         t = target.get(metric)
         if u is None or t is None or t == 0:
             return
         diff = (u - t) / t
         # lower_is_risky=True の指標は「値が小さすぎる」ことが問題
-        risky = diff < -DIFF_THRESHOLD if lower_is_risky else abs(diff) > DIFF_THRESHOLD
+        risky = diff < -threshold if lower_is_risky else abs(diff) > threshold
         findings.append({
             "metric": metric,
             "user_value": u,
@@ -50,12 +51,16 @@ def compare_metrics(user: dict, target: dict) -> list[dict]:
             "comment": comment_bad if risky else comment_good,
         })
 
+    # 初動タイミングは参考程度の扱い: 極端に早い場合（基準の半分未満）のみ
+    # 柔らかく指摘する。ラッシュ構成など意図的に早い展開もあるため。
     add(
         "avg_first_engagement_sec",
-        "最初の交戦が上位帯より早すぎます。ラウンド開始直後のドライピークや無理な初動を減らし、"
-        "セットアップ・情報収集を済ませてから撃ち合いましょう。",
-        "初動交戦のタイミングは上位帯に近い水準です。",
+        "最初の交戦がかなり早い試合でした。意図したラッシュなら問題ありませんが、"
+        "ドライピークでの早期デスが多い場合は、セットアップ・情報収集を済ませてから"
+        "撃ち合うことを意識してみてください（参考）。",
+        "初動交戦のタイミングに大きな偏りはありません。",
         lower_is_risky=True,
+        threshold=0.5,
     )
     add(
         "avg_engagements_per_round",
@@ -83,46 +88,55 @@ RATING_LABELS = {
 }
 
 
-def _rate_round(issue_count: int, first_engagement_sec: float | None,
-                target_first: float) -> str:
-    """検出された問題数と初動タイミングからラウンドを◎○△✖で簡易評価する。"""
-    if issue_count >= 2:
+def _rate_round(major_count: int, minor_count: int) -> str:
+    """検出された問題数からラウンドを◎○△✖で簡易評価する。
+
+    major: 評価を下げる問題（関与なし・交戦過多・早期崩壊）
+    minor: 参考情報（極端に早い初動など）。◎→○に変わる程度で、評価は下げない。
+    """
+    if major_count >= 2:
         return "✖"
-    if issue_count == 1:
+    if major_count == 1:
         return "△"
-    # 問題なし: 初動が上位帯の水準以上に規律的なら◎、それ以外は○
-    if first_engagement_sec is not None and first_engagement_sec >= target_first * 0.8:
-        return "◎"
-    return "○"
+    return "○" if minor_count else "◎"
 
 
 def analyze_rounds(metrics: MatchMetrics, target: dict) -> list[dict]:
-    """ラウンドごとの所見と簡易評価（◎○△✖）を生成する。"""
+    """ラウンドごとの所見と簡易評価（◎○△✖）を生成する。
+
+    初動タイミングは意図的なラッシュ等もあるため参考情報にとどめ、
+    評価（◎○△✖）を下げる要因にはしない。
+    """
     results = []
     target_first = target.get("avg_first_engagement_sec", 30.0)
     for r in metrics.rounds:
-        issues: list[str] = []
-        if r.first_engagement_sec is not None and r.first_engagement_sec < target_first * 0.5:
-            issues.append(
-                f"開始{r.first_engagement_sec:.0f}秒で交戦が発生しています。"
-                "初動が早すぎる可能性があります（上位帯の平均は"
-                f"{target_first:.0f}秒前後）。"
-            )
+        majors: list[str] = []
+        minors: list[str] = []
         if r.engagement_count == 0:
-            issues.append(
+            majors.append(
                 "交戦が検出されませんでした。ラウンドへの関与が薄い（寄り遅れ・芋り）か、"
                 "早期に終了したラウンドの可能性があります。"
             )
         if r.engagement_count >= 8:
-            issues.append(
+            majors.append(
                 "交戦回数が非常に多いラウンドです。撃ち合いの選択（有利ポジション以外では"
                 "引く判断）を見直す余地があります。"
             )
         if r.duration_sec < 50:
-            issues.append("非常に短いラウンドです。ラッシュまたは早期崩壊の可能性があります。")
+            majors.append("非常に短いラウンドです。ラッシュまたは早期崩壊の可能性があります。")
+        # 初動は極端に早い場合のみ「参考」として添える（評価には影響しない）
+        if (
+            r.first_engagement_sec is not None
+            and r.first_engagement_sec < target_first * 0.35
+        ):
+            minors.append(
+                f"（参考）開始{r.first_engagement_sec:.0f}秒で交戦が発生しています。"
+                "意図したラッシュであれば問題ありません。ドライピークでの早期デスが"
+                "多いようなら見直しましょう。"
+            )
 
-        rating = _rate_round(len(issues), r.first_engagement_sec, target_first)
-        notes = issues if issues else ["特筆すべき問題は検出されませんでした。"]
+        rating = _rate_round(len(majors), len(minors))
+        notes = (majors + minors) or ["特筆すべき問題は検出されませんでした。"]
         results.append({
             "round": r.index,
             "start_sec": r.start_sec,
@@ -172,6 +186,10 @@ AI_SYSTEM_PROMPT = """\
 # 基本方針
 - プレイヤーの現在のランク帯と、目標である次のランク帯の差を埋める指導をする
 - 撃ち合い（エイム）だけでなく立ち回りを同等以上に重視して評価する
+- 初動交戦のタイミング（first_engagement_sec）は参考程度に扱う。
+  ラッシュ構成など意図的に早い展開は正当な戦術であり、初動が早いこと
+  それ自体を理由に低評価やダメ出しをしない。問題にするのは、映像から
+  「ドライピークで孤立してデスした」等の根拠が読み取れる場合だけにする
 - 良かった点と改善点の両方を必ず挙げる（改善点だけにしない）
 - ラウンド番号を明示して指摘する（例: 「第3ラウンド: ...」）
 - 抽象論ではなく「次の試合から実行できる」行動レベルのアドバイスにする

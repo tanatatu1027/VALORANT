@@ -495,9 +495,9 @@ function renderReport(rep) {
   document.getElementById("res-summary").innerHTML =
     `<p style="font-size:14px;line-height:1.9">現在のランク: <b>${rep.user_rank}</b> ／ 目標: <b>${rep.target_rank}</b>` +
     `（比較基準: ${rep.benchmark.source === "learned" ? `学習動画${rep.benchmark.sample_count}本の実測値` : "初期値"}）<br>` +
-    `検出ラウンド数: <b>${s.round_count}</b> ／ 平均初動交戦: <b>${s.avg_first_engagement_sec}秒</b>` +
-    `（${rep.target_rank}帯の基準: ${rep.benchmark.avg_first_engagement_sec}秒） ／ ` +
-    `交戦/ラウンド: <b>${s.avg_engagements_per_round}</b>（基準: ${rep.benchmark.avg_engagements_per_round}）</p>`;
+    `検出ラウンド数: <b>${s.round_count}</b> ／ ` +
+    `交戦/ラウンド: <b>${s.avg_engagements_per_round}</b>（基準: ${rep.benchmark.avg_engagements_per_round}） ／ ` +
+    `平均初動交戦（参考）: ${s.avg_first_engagement_sec}秒</p>`;
 
   const fill = (id, items, fallback) => {
     const ul = document.getElementById(id);
