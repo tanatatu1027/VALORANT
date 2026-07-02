@@ -126,7 +126,9 @@ def _run_analysis_job(job_id: str, video_path: Path, rank: str) -> None:
         video_path.unlink(missing_ok=True)
 
 
-def _run_reference_job(job_id: str, video_path: Path, rank: str, label: str) -> None:
+def _run_reference_job(
+    job_id: str, video_path: Path, rank: str, label: str, licensed: bool
+) -> None:
     """学習用動画の取り込みジョブ（別スレッドで実行）。"""
     try:
         _update_job(job_id, status="analyzing", progress=0.0)
@@ -138,7 +140,9 @@ def _run_reference_job(job_id: str, video_path: Path, rank: str, label: str) -> 
         metrics = analyze_video(
             str(video_path), progress_cb=on_progress, collect_keyframes=False
         )
-        ref_id = store.add_reference(rank, metrics, label=label)
+        ref_id = store.add_reference(
+            rank, metrics, label=label, source="upload", licensed=licensed
+        )
         _update_job(
             job_id,
             status="done",
@@ -188,9 +192,14 @@ async def upload_reference(
     file: UploadFile = File(...),
     rank: str = Form(...),
     label: str = Form(""),
+    licensed: bool = Form(False),
     x_admin_token: str | None = Header(default=None),
 ):
-    """[管理者] 学習用のプロ・上位ランク動画を登録する（ダイヤ帯は多めに推奨）。"""
+    """[管理者] 学習用のプロ・上位ランク動画を登録する（ダイヤ帯は多めに推奨）。
+
+    licensed=True は権利者の許諾を得た動画。開発用の仮データは False のまま登録し、
+    公開前に一括削除できる。
+    """
     _require_admin(x_admin_token)
     try:
         rank_norm = normalize_rank(rank)
@@ -208,12 +217,16 @@ async def upload_reference(
             "rank": rank_norm,
         }
     threading.Thread(
-        target=_run_reference_job, args=(job_id, video_path, rank_norm, label), daemon=True
+        target=_run_reference_job,
+        args=(job_id, video_path, rank_norm, label, licensed),
+        daemon=True,
     ).start()
     return {"job_id": job_id}
 
 
-def _run_youtube_reference_job(job_id: str, url: str, rank: str, label: str) -> None:
+def _run_youtube_reference_job(
+    job_id: str, url: str, rank: str, label: str, licensed: bool
+) -> None:
     """YouTube動画をダウンロードして学習に取り込むジョブ。"""
     video_path: Path | None = None
     try:
@@ -233,7 +246,10 @@ def _run_youtube_reference_job(job_id: str, url: str, rank: str, label: str) -> 
             str(video_path), progress_cb=on_analyze, collect_keyframes=False
         )
         ref_label = label or title
-        ref_id = store.add_reference(rank, metrics, label=ref_label)
+        ref_id = store.add_reference(
+            rank, metrics, label=ref_label,
+            source="youtube", source_url=url, licensed=licensed,
+        )
         _update_job(
             job_id,
             status="done",
@@ -257,6 +273,7 @@ class YoutubeReferenceRequest(BaseModel):
     url: str
     rank: str
     label: str = ""
+    licensed: bool = False
 
 
 @app.post("/api/reference/youtube")
@@ -288,10 +305,58 @@ async def reference_from_youtube(
         }
     threading.Thread(
         target=_run_youtube_reference_job,
-        args=(job_id, req.url, rank_norm, req.label),
+        args=(job_id, req.url, rank_norm, req.label, req.licensed),
         daemon=True,
     ).start()
     return {"job_id": job_id}
+
+
+@app.get("/api/admin/references")
+async def list_references(x_admin_token: str | None = Header(default=None)):
+    """[管理者] 学習データ一覧（出典・許諾状態付き）。"""
+    _require_admin(x_admin_token)
+    return {"references": store.list_references()}
+
+
+@app.delete("/api/admin/references/{reference_id}")
+async def delete_reference(
+    reference_id: int,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] 学習データを1件削除する。"""
+    _require_admin(x_admin_token)
+    try:
+        store.delete_reference(reference_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "reference_counts": store.reference_counts()}
+
+
+class LicensedRequest(BaseModel):
+    licensed: bool
+
+
+@app.post("/api/admin/references/{reference_id}/licensed")
+async def set_reference_licensed(
+    reference_id: int,
+    req: LicensedRequest,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] 学習データの許諾状態を変更する（後から許可が取れた場合など）。"""
+    _require_admin(x_admin_token)
+    try:
+        store.set_reference_licensed(reference_id, req.licensed)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "id": reference_id, "licensed": req.licensed}
+
+
+@app.post("/api/admin/references/purge-unlicensed")
+async def purge_unlicensed(x_admin_token: str | None = Header(default=None)):
+    """[管理者] 未許諾（開発用）の学習データを一括削除する。公開前のリセット用。"""
+    _require_admin(x_admin_token)
+    deleted = store.purge_unlicensed_references()
+    return {"deleted": deleted, "reference_counts": store.reference_counts()}
 
 
 class FeedbackRequest(BaseModel):

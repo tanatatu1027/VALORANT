@@ -61,10 +61,30 @@ class BenchmarkStore:
                     rank TEXT NOT NULL,
                     label TEXT,
                     metrics_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'upload',
+                    source_url TEXT,
+                    licensed INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # 既存DBへのマイグレーション（列がなければ追加）
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(reference_videos)")
+            }
+            if "source" not in cols:
+                conn.execute(
+                    "ALTER TABLE reference_videos ADD COLUMN"
+                    " source TEXT NOT NULL DEFAULT 'upload'"
+                )
+            if "source_url" not in cols:
+                conn.execute("ALTER TABLE reference_videos ADD COLUMN source_url TEXT")
+            if "licensed" not in cols:
+                conn.execute(
+                    "ALTER TABLE reference_videos ADD COLUMN"
+                    " licensed INTEGER NOT NULL DEFAULT 0"
+                )
             # プレイヤーがコーチング依頼時にアップロードした動画の解析結果。
             # 管理者が承認すると reference_videos にコピーされ学習に使われる。
             conn.execute(
@@ -92,16 +112,82 @@ class BenchmarkStore:
                 """
             )
 
-    def add_reference(self, rank: str, metrics: MatchMetrics, label: str = "") -> int:
-        """学習動画の解析結果を保存する。"""
+    def add_reference(
+        self,
+        rank: str,
+        metrics: MatchMetrics,
+        label: str = "",
+        source: str = "upload",
+        source_url: str | None = None,
+        licensed: bool = False,
+    ) -> int:
+        """学習動画の解析結果を保存する。
+
+        source: 'upload'（管理者アップロード） / 'youtube' / 'player'（プレイヤー提供）
+        licensed: 権利者の許諾を得ているか（開発用の仮データは False）
+        """
         r = normalize_rank(rank)
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO reference_videos (rank, label, metrics_json, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (r, label, json.dumps(metrics.to_dict()), time.time()),
+                "INSERT INTO reference_videos"
+                " (rank, label, metrics_json, created_at, source, source_url, licensed)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    r, label, json.dumps(metrics.to_dict()), time.time(),
+                    source, source_url, 1 if licensed else 0,
+                ),
             )
             return int(cur.lastrowid)
+
+    def list_references(self) -> list[dict]:
+        """学習データ一覧（新しい順、出典・許諾状態付き）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, rank, label, created_at, source, source_url, licensed,"
+                " metrics_json FROM reference_videos ORDER BY created_at DESC"
+            ).fetchall()
+        result = []
+        for row in rows:
+            metrics = json.loads(row["metrics_json"])
+            result.append({
+                "id": row["id"],
+                "rank": row["rank"],
+                "label": row["label"],
+                "created_at": row["created_at"],
+                "source": row["source"],
+                "source_url": row["source_url"],
+                "licensed": bool(row["licensed"]),
+                "round_count": metrics.get("round_count"),
+            })
+        return result
+
+    def delete_reference(self, reference_id: int) -> None:
+        """学習データを1件削除する。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM reference_videos WHERE id = ?", (reference_id,)
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"学習データが見つかりません: {reference_id}")
+
+    def set_reference_licensed(self, reference_id: int, licensed: bool) -> None:
+        """学習データの許諾状態を変更する（後から許可が取れた場合など）。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE reference_videos SET licensed = ? WHERE id = ?",
+                (1 if licensed else 0, reference_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"学習データが見つかりません: {reference_id}")
+
+    def purge_unlicensed_references(self) -> int:
+        """未許諾（開発用）の学習データを一括削除し、削除件数を返す。
+
+        公開前に開発用の仮データだけを消して、許諾済みデータを残すために使う。
+        """
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM reference_videos WHERE licensed = 0")
+            return cur.rowcount
 
     def reference_counts(self) -> dict[str, int]:
         """ランク帯ごとの学習動画本数。"""
@@ -189,9 +275,11 @@ class BenchmarkStore:
                 raise KeyError(f"学習候補が見つかりません: {contribution_id}")
             if row["status"] != "pending":
                 raise ValueError(f"この候補は処理済みです（status={row['status']}）")
+            # プレイヤーはアップロード時に学習利用へ同意しているため許諾済み扱い
             conn.execute(
-                "INSERT INTO reference_videos (rank, label, metrics_json, created_at)"
-                " VALUES (?, ?, ?, ?)",
+                "INSERT INTO reference_videos"
+                " (rank, label, metrics_json, created_at, source, source_url, licensed)"
+                " VALUES (?, ?, ?, ?, 'player', NULL, 1)",
                 (row["rank"], "プレイヤー提供", row["metrics_json"], time.time()),
             )
             conn.execute(

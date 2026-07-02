@@ -80,6 +80,14 @@
   video { width: 100%; max-height: 420px; background: #000; border-radius: 8px; }
   .video-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .admin-badge { font-size: 12px; color: var(--good); }
+  .checkbox-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 14px;
+    color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  .checkbox-row input[type=checkbox] { width: auto; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .badge-licensed { background: rgba(51,196,141,.15); color: var(--good); border: 1px solid var(--good); }
+  .badge-dev { background: rgba(245,166,35,.12); color: var(--warn); border: 1px solid var(--warn); }
 </style>
 </head>
 <body>
@@ -198,6 +206,14 @@
         <input type="text" id="train-label" placeholder="例: プロ選手A アセント">
         <label>試合動画</label>
         <input type="file" id="train-file" accept="video/*">
+        <label class="checkbox-row">
+          <input type="checkbox" id="train-licensed">
+          この動画は権利者の許諾を得ています（許諾済みとして登録）
+        </label>
+        <p class="note">
+          未チェックのまま登録すると「開発用（未許諾）」扱いになります。
+          開発用データは公開前に「学習データ一覧」から一括削除できます。
+        </p>
         <button class="submit" id="train-submit">学習に追加する</button>
 
         <div class="progress-wrap" id="train-progress">
@@ -216,6 +232,10 @@
         </p>
         <label>YouTube URL</label>
         <input type="url" id="yt-url" placeholder="https://www.youtube.com/watch?v=...">
+        <label class="checkbox-row">
+          <input type="checkbox" id="yt-licensed">
+          この動画は投稿者の許諾を得ています（許諾済みとして登録）
+        </label>
         <button class="submit" id="yt-submit">URLから学習に追加する</button>
 
         <div class="progress-wrap" id="yt-progress">
@@ -249,6 +269,24 @@
           <tbody></tbody>
         </table>
         <p class="note" id="contrib-empty" style="display:none">未レビューの提供動画はありません。</p>
+      </div>
+
+      <div class="card">
+        <h3>学習データ一覧</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          登録済みの学習データです。開発用（未許諾）データは公開前に一括削除してください。
+          後から許可が取れたデータは「許諾済みにする」で切り替えられます。
+        </p>
+        <table id="ref-table">
+          <thead><tr><th>ID</th><th>ランク帯</th><th>メモ / 出典</th><th>種別</th><th>許諾</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="note" id="ref-empty" style="display:none">学習データはまだありません。</p>
+        <button class="submit" id="purge-btn"
+          style="margin-top:16px; background:var(--panel2); border:1px solid var(--warn); color:var(--warn)">
+          開発用（未許諾）データを一括削除
+        </button>
+        <span id="purge-result" style="margin-left:12px; font-size:13px; color:var(--muted)"></span>
       </div>
 
       <div class="card">
@@ -311,7 +349,7 @@ function switchTab(name) {
   if (name === "train" && adminToken) tryAdminLogin(adminToken, true);
 }
 
-async function submitJob({ url, fileInput, rank, label, prefix, headers, onDone }) {
+async function submitJob({ url, fileInput, rank, label, prefix, headers, extraFields, onDone }) {
   const file = document.getElementById(fileInput).files[0];
   const errBox = document.getElementById(prefix + "-error");
   errBox.style.display = "none";
@@ -326,6 +364,7 @@ async function submitJob({ url, fileInput, rank, label, prefix, headers, onDone 
   form.append("file", file);
   form.append("rank", rank);
   if (label !== undefined) form.append("label", label);
+  for (const [k, v] of Object.entries(extraFields || {})) form.append(k, v);
 
   try {
     const res = await fetch(url, { method: "POST", body: form, headers: headers || {} });
@@ -473,15 +512,91 @@ async function tryAdminLogin(token, silent) {
 }
 
 async function refreshAdminData() {
-  const [benchRes, contribRes, fbRes] = await Promise.all([
+  const [benchRes, contribRes, fbRes, refRes] = await Promise.all([
     fetch("/api/benchmarks"),
     fetch("/api/admin/contributions", { headers: { "X-Admin-Token": adminToken } }),
     fetch("/api/admin/feedback", { headers: { "X-Admin-Token": adminToken } }),
+    fetch("/api/admin/references", { headers: { "X-Admin-Token": adminToken } }),
   ]);
   renderBenchTable(await benchRes.json());
   renderContribTable((await contribRes.json()).contributions);
   renderFeedbackTable((await fbRes.json()).feedback);
+  renderRefTable((await refRes.json()).references);
 }
+
+const SOURCE_LABELS = { upload: "アップロード", youtube: "YouTube", player: "プレイヤー提供" };
+
+function renderRefTable(items) {
+  const tbody = document.querySelector("#ref-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("ref-empty").style.display = items.length ? "none" : "";
+  for (const r of items) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.id}</td><td>${r.rank}</td>`;
+
+    const tdLabel = document.createElement("td");
+    tdLabel.textContent = r.label || "";  // XSS対策のためtextContentで挿入
+    if (r.source_url) {
+      const a = document.createElement("a");
+      a.href = r.source_url; a.target = "_blank"; a.rel = "noopener";
+      a.style.color = "var(--accent)";
+      a.textContent = r.label ? " (URL)" : "URL";
+      tdLabel.appendChild(a);
+    }
+    tr.appendChild(tdLabel);
+
+    const tdRest = document.createElement("td");
+    tdRest.textContent = SOURCE_LABELS[r.source] || r.source;
+    tr.appendChild(tdRest);
+
+    const tdLic = document.createElement("td");
+    tdLic.innerHTML = r.licensed
+      ? `<span class="badge badge-licensed">許諾済み</span>`
+      : `<span class="badge badge-dev">開発用</span>`;
+    tr.appendChild(tdLic);
+
+    const tdOp = document.createElement("td");
+    tdOp.innerHTML =
+      (r.licensed ? "" : `<button class="btn-small btn-approve" data-refid="${r.id}" data-act="license">許諾済みにする</button> `) +
+      `<button class="btn-small btn-reject" data-refid="${r.id}" data-act="delete">削除</button>`;
+    tr.appendChild(tdOp);
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("button[data-refid]").forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.dataset.act === "delete" && !confirm(`学習データ ID ${btn.dataset.refid} を削除しますか？`)) return;
+      btn.disabled = true;
+      const opts = btn.dataset.act === "delete"
+        ? { method: "DELETE", headers: { "X-Admin-Token": adminToken } }
+        : {
+            method: "POST",
+            headers: { "X-Admin-Token": adminToken, "Content-Type": "application/json" },
+            body: JSON.stringify({ licensed: true }),
+          };
+      const path = btn.dataset.act === "delete"
+        ? `/api/admin/references/${btn.dataset.refid}`
+        : `/api/admin/references/${btn.dataset.refid}/licensed`;
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "操作に失敗しました");
+      }
+      await refreshAdminData();
+    };
+  });
+}
+
+document.getElementById("purge-btn").onclick = async () => {
+  if (!confirm("開発用（未許諾）の学習データをすべて削除します。よろしいですか？\n（許諾済みデータは残ります）")) return;
+  const res = await fetch("/api/admin/references/purge-unlicensed", {
+    method: "POST", headers: { "X-Admin-Token": adminToken },
+  });
+  if (res.ok) {
+    const { deleted } = await res.json();
+    document.getElementById("purge-result").textContent = `${deleted}件を削除しました`;
+  }
+  await refreshAdminData();
+};
 
 function renderFeedbackTable(items) {
   const tbody = document.querySelector("#feedback-table tbody");
@@ -552,6 +667,7 @@ document.getElementById("train-submit").onclick = () =>
     label: document.getElementById("train-label").value,
     prefix: "train",
     headers: { "X-Admin-Token": adminToken },
+    extraFields: { licensed: document.getElementById("train-licensed").checked },
     onDone: async () => {
       await refreshAdminData();
       setProgress("train", 1, "学習に追加しました");
@@ -578,6 +694,7 @@ document.getElementById("yt-submit").onclick = async () => {
         url,
         rank: document.getElementById("train-rank").value,
         label: document.getElementById("train-label").value,
+        licensed: document.getElementById("yt-licensed").checked,
       }),
     });
     if (!res.ok) {
