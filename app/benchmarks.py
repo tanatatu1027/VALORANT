@@ -79,6 +79,18 @@ class BenchmarkStore:
                 )
                 """
             )
+            # プレイヤーからのご意見・ご要望。サイト改善の材料として管理者が確認する。
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message TEXT NOT NULL,
+                    rank TEXT,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    created_at REAL NOT NULL
+                )
+                """
+            )
 
     def add_reference(self, rank: str, metrics: MatchMetrics, label: str = "") -> int:
         """学習動画の解析結果を保存する。"""
@@ -199,3 +211,46 @@ class BenchmarkStore:
             if cur.rowcount == 0:
                 raise KeyError(f"未処理の学習候補が見つかりません: {contribution_id}")
         return {"id": contribution_id, "status": "rejected"}
+
+    # ---- プレイヤーからのご意見・ご要望 -----------------------------------
+
+    def add_feedback(self, message: str, rank: str | None = None) -> int:
+        """プレイヤーのコメントを保存する。rank は任意（正規化できなければ捨てる）。"""
+        rank_norm: str | None = None
+        if rank:
+            try:
+                rank_norm = normalize_rank(rank)
+            except ValueError:
+                rank_norm = None
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO feedback (message, rank, status, created_at)"
+                " VALUES (?, ?, 'new', ?)",
+                (message, rank_norm, time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def list_feedback(self, status: str | None = "new") -> list[dict]:
+        """コメント一覧（新しい順）。status=None で全件。"""
+        with self._connect() as conn:
+            if status is None:
+                rows = conn.execute(
+                    "SELECT * FROM feedback ORDER BY created_at DESC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM feedback WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_feedback_done(self, feedback_id: int) -> dict:
+        """コメントを対応済みにする。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE feedback SET status = 'done' WHERE id = ? AND status = 'new'",
+                (feedback_id,),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"未対応のコメントが見つかりません: {feedback_id}")
+        return {"id": feedback_id, "status": "done"}

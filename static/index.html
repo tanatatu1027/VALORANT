@@ -35,9 +35,10 @@
   .tabs button.active { background: var(--accent); border-color: var(--accent); font-weight: bold; }
   .panel { background: var(--panel); border-radius: 0 8px 8px 8px; padding: 24px; }
   label { display: block; margin: 14px 0 6px; font-size: 14px; color: var(--muted); }
-  select, input[type=file], input[type=text], input[type=password] {
+  select, input[type=file], input[type=text], input[type=password], input[type=url], textarea {
     width: 100%; padding: 10px; background: var(--panel2); color: var(--text);
     border: 1px solid #34434f; border-radius: 6px; font-size: 14px;
+    font-family: inherit; resize: vertical;
   }
   .submit {
     margin-top: 20px; background: var(--accent); color: #fff; border: none;
@@ -105,7 +106,7 @@
     <label>試合動画（mp4 / mov / mkv / webm / avi）</label>
     <input type="file" id="coach-file" accept="video/*">
     <p class="note">
-      ※ アップロードされた動画の解析結果は、運営者の確認を経て今後のコーチング精度向上（ランク帯別の学習データ）に活用されることがあります。
+      ※ アップロードいただいた動画は、コーチングに加えて、本サイトの学習データ（ランク帯別のお手本・比較基準）としても使用させていただきます。
     </p>
     <button class="submit" id="coach-submit">解析してコーチングを受ける</button>
 
@@ -149,6 +150,20 @@
         <div class="ai-report" id="res-ai"></div>
       </div>
     </div>
+
+    <!-- ご意見・ご要望 -->
+    <div class="card" style="margin-top:28px">
+      <h3>ご意見・ご要望</h3>
+      <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+        「解析がずれていた」「こんな機能がほしい」など、お気づきの点をお寄せください。
+        いただいたコメントをもとにサイトを改善していきます。
+      </p>
+      <textarea id="feedback-text" rows="4" maxlength="2000"
+        placeholder="例: ラウンドの区切りが実際とずれていました / キル数も見られるようにしてほしい"></textarea>
+      <button class="submit" id="feedback-submit" style="margin-top:12px">コメントを送信</button>
+      <span id="feedback-done" style="margin-left:12px; font-size:13px; color:var(--good)"></span>
+      <div class="error-box" id="feedback-error"></div>
+    </div>
   </section>
 
   <!-- 管理者タブ -->
@@ -190,6 +205,37 @@
           <div class="progress-label" id="train-status">アップロード中...</div>
         </div>
         <div class="error-box" id="train-error"></div>
+      </div>
+
+      <div class="card">
+        <h3>YouTubeのURLから学習する</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          プロやランク上位プレイヤーのYouTube動画のURLを指定すると、
+          サーバーが動画を取得して解析し、指定ランク帯の学習データに追加します
+          （ファイルアップロード不要。ランク帯とメモは上のフォームの値を使います）。
+        </p>
+        <label>YouTube URL</label>
+        <input type="url" id="yt-url" placeholder="https://www.youtube.com/watch?v=...">
+        <button class="submit" id="yt-submit">URLから学習に追加する</button>
+
+        <div class="progress-wrap" id="yt-progress">
+          <div class="progress-bar"><div class="progress-fill" id="yt-fill"></div></div>
+          <div class="progress-label" id="yt-status">準備中...</div>
+        </div>
+        <div class="error-box" id="yt-error"></div>
+      </div>
+
+      <div class="card">
+        <h3>プレイヤーからのコメント</h3>
+        <p style="font-size:13px; line-height:1.8; color:var(--muted)">
+          プレイヤーから寄せられたご意見・ご要望です。サイト改善の参考にし、
+          対応が済んだものは「対応済み」にしてください。
+        </p>
+        <table id="feedback-table">
+          <thead><tr><th>ID</th><th>日時</th><th>コメント</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="note" id="feedback-empty" style="display:none">未対応のコメントはありません。</p>
       </div>
 
       <div class="card">
@@ -310,6 +356,7 @@ async function pollJob(jobId, prefix, onDone) {
     if (job.status === "error") throw new Error("解析エラー: " + job.error);
     const label = {
       queued: "順番待ち...",
+      downloading: "YouTubeから動画を取得中...",
       analyzing: "動画を解析中...（ラウンド検出・交戦検出）",
       coaching: "コーチングレポートを生成中...",
       done: "完了",
@@ -426,12 +473,42 @@ async function tryAdminLogin(token, silent) {
 }
 
 async function refreshAdminData() {
-  const [benchRes, contribRes] = await Promise.all([
+  const [benchRes, contribRes, fbRes] = await Promise.all([
     fetch("/api/benchmarks"),
     fetch("/api/admin/contributions", { headers: { "X-Admin-Token": adminToken } }),
+    fetch("/api/admin/feedback", { headers: { "X-Admin-Token": adminToken } }),
   ]);
   renderBenchTable(await benchRes.json());
   renderContribTable((await contribRes.json()).contributions);
+  renderFeedbackTable((await fbRes.json()).feedback);
+}
+
+function renderFeedbackTable(items) {
+  const tbody = document.querySelector("#feedback-table tbody");
+  tbody.innerHTML = "";
+  document.getElementById("feedback-empty").style.display = items.length ? "none" : "";
+  for (const f of items) {
+    const tr = document.createElement("tr");
+    const date = new Date(f.created_at * 1000);
+    const when = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
+    const tdMsg = document.createElement("td");
+    tdMsg.style.whiteSpace = "pre-wrap";
+    tdMsg.textContent = f.message;  // XSS対策のためtextContentで挿入
+    tr.innerHTML = `<td>${f.id}</td><td>${when}</td>`;
+    tr.appendChild(tdMsg);
+    const tdOp = document.createElement("td");
+    tdOp.innerHTML = `<button class="btn-small btn-approve" data-fbid="${f.id}">対応済み</button>`;
+    tr.appendChild(tdOp);
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("button[data-fbid]").forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetch(`/api/admin/feedback/${btn.dataset.fbid}/done`,
+        { method: "POST", headers: { "X-Admin-Token": adminToken } });
+      await refreshAdminData();
+    };
+  });
 }
 
 function renderContribTable(items) {
@@ -480,6 +557,80 @@ document.getElementById("train-submit").onclick = () =>
       setProgress("train", 1, "学習に追加しました");
     },
   });
+
+// ---- YouTube URLから学習（管理者） ----
+document.getElementById("yt-submit").onclick = async () => {
+  const url = document.getElementById("yt-url").value.trim();
+  const errBox = document.getElementById("yt-error");
+  errBox.style.display = "none";
+  if (!url) { errBox.textContent = "YouTubeのURLを入力してください。"; errBox.style.display = "block"; return; }
+
+  const btn = document.getElementById("yt-submit");
+  btn.disabled = true;
+  document.getElementById("yt-progress").style.display = "block";
+  setProgress("yt", 0, "リクエスト送信中...");
+
+  try {
+    const res = await fetch("/api/reference/youtube", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        url,
+        rank: document.getElementById("train-rank").value,
+        label: document.getElementById("train-label").value,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `リクエストに失敗しました (${res.status})`);
+    }
+    const { job_id } = await res.json();
+    await pollJob(job_id, "yt", async (result) => {
+      await refreshAdminData();
+      setProgress("yt", 1, `学習に追加しました${result.title ? `: ${result.title}` : ""}`);
+      document.getElementById("yt-url").value = "";
+    });
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ---- ご意見・ご要望の送信（プレイヤー） ----
+document.getElementById("feedback-submit").onclick = async () => {
+  const text = document.getElementById("feedback-text").value.trim();
+  const errBox = document.getElementById("feedback-error");
+  const doneLabel = document.getElementById("feedback-done");
+  errBox.style.display = "none";
+  doneLabel.textContent = "";
+  if (!text) { errBox.textContent = "コメントを入力してください。"; errBox.style.display = "block"; return; }
+
+  const btn = document.getElementById("feedback-submit");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        rank: document.getElementById("coach-rank").value,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `送信に失敗しました (${res.status})`);
+    }
+    document.getElementById("feedback-text").value = "";
+    doneLabel.textContent = "✓ 送信しました。ご意見ありがとうございます！";
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 loadRanks();
 </script>

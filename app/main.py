@@ -12,11 +12,15 @@
 - GET  /api/jobs/{job_id}                 解析ジョブの進捗・結果を取得
 - GET  /videos/{video_name}               アップロードした動画の再生（解説と併用）
 - GET  /api/benchmarks                    現在のベンチマークと学習本数を確認
+- POST /api/feedback                      プレイヤーからのご意見・ご要望を投稿
 - POST /api/reference/upload      [管理者] 学習用（プロ・上位ランク）動画を登録
+- POST /api/reference/youtube     [管理者] YouTubeのURLから学習動画を取り込む
 - GET  /api/admin/check           [管理者] トークン確認
 - GET  /api/admin/contributions   [管理者] プレイヤー提供動画（学習候補）の一覧
 - POST /api/admin/contributions/{id}/approve  [管理者] 候補を学習に反映
 - POST /api/admin/contributions/{id}/reject   [管理者] 候補を却下
+- GET  /api/admin/feedback        [管理者] コメント一覧
+- POST /api/admin/feedback/{id}/done          [管理者] コメントを対応済みにする
 - GET  /                                  Web UI
 """
 
@@ -33,11 +37,13 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .benchmarks import BenchmarkStore
 from .coaching import generate_full_report
 from .ranks import RANKS, normalize_rank
 from .video_analysis import analyze_video
+from .youtube import download_youtube_video, is_youtube_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -205,6 +211,127 @@ async def upload_reference(
         target=_run_reference_job, args=(job_id, video_path, rank_norm, label), daemon=True
     ).start()
     return {"job_id": job_id}
+
+
+def _run_youtube_reference_job(job_id: str, url: str, rank: str, label: str) -> None:
+    """YouTube動画をダウンロードして学習に取り込むジョブ。"""
+    video_path: Path | None = None
+    try:
+        _update_job(job_id, status="downloading", progress=0.0)
+
+        def on_download(p: float) -> None:
+            # ダウンロードが全体の40%、解析が残り60%
+            _update_job(job_id, progress=round(p * 0.4, 3))
+
+        video_path, title = download_youtube_video(url, UPLOAD_DIR, on_download)
+        _update_job(job_id, status="analyzing", progress=0.4)
+
+        def on_analyze(p: float) -> None:
+            _update_job(job_id, progress=round(0.4 + p * 0.6, 3))
+
+        metrics = analyze_video(
+            str(video_path), progress_cb=on_analyze, collect_keyframes=False
+        )
+        ref_label = label or title
+        ref_id = store.add_reference(rank, metrics, label=ref_label)
+        _update_job(
+            job_id,
+            status="done",
+            progress=1.0,
+            result={
+                "reference_id": ref_id,
+                "rank": rank,
+                "title": title,
+                "metrics": metrics.to_dict(),
+                "reference_counts": store.reference_counts(),
+            },
+        )
+    except Exception as e:
+        _update_job(job_id, status="error", error=str(e))
+    finally:
+        if video_path is not None:
+            video_path.unlink(missing_ok=True)
+
+
+class YoutubeReferenceRequest(BaseModel):
+    url: str
+    rank: str
+    label: str = ""
+
+
+@app.post("/api/reference/youtube")
+async def reference_from_youtube(
+    req: YoutubeReferenceRequest,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] YouTubeのURLから学習動画を取り込む。"""
+    _require_admin(x_admin_token)
+    try:
+        rank_norm = normalize_rank(req.rank)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not is_youtube_url(req.url):
+        raise HTTPException(
+            status_code=400,
+            detail="YouTubeのURLを入力してください（例: https://www.youtube.com/watch?v=...）",
+        )
+
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "type": "youtube_reference",
+            "status": "queued",
+            "progress": 0.0,
+            "rank": rank_norm,
+            "url": req.url,
+        }
+    threading.Thread(
+        target=_run_youtube_reference_job,
+        args=(job_id, req.url, rank_norm, req.label),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id}
+
+
+class FeedbackRequest(BaseModel):
+    message: str
+    rank: str = ""
+
+
+@app.post("/api/feedback")
+async def post_feedback(req: FeedbackRequest):
+    """プレイヤーからのご意見・ご要望を受け付ける。"""
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="コメントを入力してください")
+    if len(message) > 2000:
+        raise HTTPException(status_code=400, detail="コメントは2000文字以内でお願いします")
+    feedback_id = store.add_feedback(message, req.rank or None)
+    return {"id": feedback_id, "ok": True}
+
+
+@app.get("/api/admin/feedback")
+async def list_feedback(
+    status: str = "new",
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] プレイヤーからのコメント一覧（status=new/done/all）。"""
+    _require_admin(x_admin_token)
+    return {"feedback": store.list_feedback(None if status == "all" else status)}
+
+
+@app.post("/api/admin/feedback/{feedback_id}/done")
+async def mark_feedback_done(
+    feedback_id: int,
+    x_admin_token: str | None = Header(default=None),
+):
+    """[管理者] コメントを対応済みにする。"""
+    _require_admin(x_admin_token)
+    try:
+        return store.mark_feedback_done(feedback_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/admin/check")
